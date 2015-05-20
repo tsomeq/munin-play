@@ -1,0 +1,415 @@
+#!/usr/bin/php
+<?php
+
+ini_set("log_errors",0);
+ini_set("display_errors",0);
+define("DEBUG", 0);
+
+$marioImg = ''
+.'@@@@@@@@@@@@@@@@@@@@@@@@@@######'."\n"
+.'@@@@@@@@@@@@xxxxxxxxxx@@@@######'."\n"
+.'@@@@@@@@@@xxxxxxxxxxxxxxxxxx####'."\n"
+.'@@@@@@@@@@      ####  ##@@      '."\n"
+.'@@@@@@@@  ##  ######  ####      '."\n"
+.'@@@@@@@@  ##    ######  ######  '."\n"
+.'@@@@@@@@    ########          @@'."\n"
+.'@@@@@@@@@@################  @@@@'."\n"
+.'@@@@          xx      xx  @@@@@@'."\n"
+.'@@              xx      xx@@@@  '."\n"
+.'####            xxxxxxxxxx@@@@  '."\n"
+.'######@@xxxx  xxxx##xxxx##xx    '."\n"
+.'@@##@@  xxxxxxxxxxxxxxxxxxxx    '."\n"
+.'@@@@      xxxxxxxxxxxxxxxxxx    '."\n"
+.'@@      xxxxxxxxxxxxxx@@@@@@@@@@'."\n"
+.'@@  @@@@xxxxxxxx@@@@@@@@@@@@@@@@'."\n"
+;
+
+/*
+*  TO test image
+*   php (thisFile) testimage
+**/
+
+// color setting
+$pallete = array (
+  0=>null, // transparent
+  1=>"ff0000",
+  2=>"009900",
+  3=>"0000ff",
+  4=>"ffcc77",
+  5=>"9999ff",
+  6=>"956918",
+);
+
+
+$marioChars = array_map(function($line) {
+    return array_map(function($c) {
+      switch ($c) {
+        case '@': return "0";
+        case '#': return "4";
+        case ' ': return "6";
+        case 'x': return "1";
+      }
+    }, str_split($line));
+  }, explode("\n", rtrim($marioImg)));
+
+
+$mario = new DrawObject($marioChars);
+$mario->scaleY(3);
+$mario->scaleX(2);
+$background  = new DrawObject( array_fill_keys(range(0,96/*height*/), array_fill_keys(range(0,160/*width*/), 5/*bg color*/)));
+$background->compose($mario, 4, 12); // place image to {left: 4, top: 2}
+
+if (isset($_SERVER["argv"][1]) && ($_SERVER["argv"][1] == "testimage"))
+{ // Testing imae
+	$line = "";
+	$background->iterateLines(function($ch, $x ,$y) use (&$line) {
+		if ($x==0) $line = "";
+		$line .= $ch;
+	}, function($y) use (&$line, $pallete) {
+		if ($y==0) echo "#=",str_repeat("=",strlen($line)),"=#\n";
+		echo "# ", colorlizedLine($line, $pallete), " #\n";
+	});
+	echo "#=",str_repeat("=",strlen($line)),"=#\n";
+	exit;
+}
+
+$rowSpans = rowSpansFromDraw($background); // scan columns
+if (DEBUG) printRowSpans($rowSpans);
+
+{ // compact entries have same contents
+  $prev = null;
+  $prevStr = "";
+  foreach ($rowSpans as $k=>$rowSpan) {
+    $str = "$rowSpan";
+    if ($prevStr == $str) {
+      $rowSpans[$k] = $prev;
+      continue;
+    }
+    $prevStr = $str;
+    $prev = $rowSpan;
+  }
+}
+
+while(1) {
+  $nChanged = 0;
+  for($i=1,$c=count($rowSpans); $i<$c; $i++) {
+    if ($rowSpans[$i-1] == $rowSpans[$i]) continue;
+    $nChanged += $rowSpans[$i-1]->balanceWithJoin($rowSpans[$i]);
+  }
+  if ($nChanged == 0) break;
+
+  if (DEBUG>1) printRowSpans($rowSpans);
+}
+
+if (isset($_SERVER["argv"][1]) && ($_SERVER["argv"][1] == "config"))
+{
+  $upper_limit = pow(10,ceil(log10($rowSpans[0]->totalSpan())));
+  $order = implode(" ", array_map(function($v){ return "r$v";}, array_keys($rowSpans[0]->items)));
+?>
+graph_category zzz
+graph_args  -l 0 -u <?php echo $upper_limit ?> --base 1000
+graph_title  Horrible Works
+graph_vlabel Something wrong
+graph_order <?php echo $order, "\n"; ?>
+<?php
+foreach($rowSpans[0]->items as $k=>$span):{ 
+ echo "r$k.colour ", $pallete[$span->draw], "\n";
+ echo "r$k.type  GAUGE\n";
+ echo "r$k.draw  AREA\n";
+ echo "r$k.min   0\n";
+ echo "r$k.label hoge$k\n";
+ echo "r$k.info  Nothing to do\n";
+} endforeach; ?>
+<?php
+  exit(0);
+}
+
+$time = time();
+$cIdx = floor($time / 1800) % count($rowSpans);
+echo " # cIdx: $cIdx \n";
+$total = 0;
+for($i = count($rowSpans[$cIdx]->items)-1; $i>=0; $i--) {
+  $span = $rowSpans[$cIdx]->items[$i];
+  $total += $span->span;
+  echo "r$i.value ", $total, "\n";
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+class DrawObject
+{
+  private $_lines;
+  private $_width = 0;
+
+  public function __construct($lines)
+  {
+    $width = 0;
+    array_walk($lines , function($line) use (&$width) { $width = max(count($line), $width); });
+    $this->_lines = array_map(function($line) use ($width) { return array_pad($line, $width, 0); }, $lines);
+    $this->_width = $width;
+  }
+
+
+  public function getWidth() 
+  {
+    return $this-_width;
+  }
+
+
+  public function printDots()
+  {
+    $charFound = function($ch, $x, $y){ echo $ch; };
+    $lineEnded = function($y) { echo "\n"; };
+    $this->iterateLines($charFound, $lineEnded);
+  }
+
+
+  // create new DrawObject with composing $this and $other
+  public function compose($other, $cX, $cY)
+  {
+    $lines = $this->_lines;
+    $charFound = function($ch, $x, $y) use (&$lines, $cX, $cY) {
+      if ($ch == 0) return;
+      if (isset($lines[$y+$cY])) {
+        if (isset($lines[$y+$cY][$x+$cX])) {
+          $lines[$y+$cY][$x+$cX] = $ch;
+        }
+      }
+    };
+    $other->iterateLines($charFound, null);
+    $this->_lines = $lines;
+  }
+
+
+  // copy lines for y axis
+  public function scaleY($scale)
+  {
+    if ((!is_int($scale)) || ($scale<1)) throw new InvalidArgumentException("only supported integer > 0");
+
+    $lines = array();
+    foreach ($this->_lines as $line) {
+      for ($i=0; $i<$scale;$i++) {
+        $lines[] = $line;
+      }
+    }
+    $this->_lines = $lines;
+  }
+
+
+  // copy lines for y axis
+  public function scaleX($scale)
+  {
+    if ((!is_int($scale)) || ($scale<1)) throw new InvalidArgumentException("only supported integer > 0");
+
+    for ($y = 0, $yEnd =count($this->_lines) ; $y<$yEnd; $y++) {
+      $line = array();
+      for ($x = 0,$xEnd=$this->_width; $x<$xEnd; $x++) {
+        for ($i=0; $i<$scale;$i++) {
+          $line[] = $this->_lines[$y][$x];
+        }
+      }
+      $this->_lines[$y] = $line;
+    }
+    $this->_width *= $scale;
+  }
+
+
+  public function iterateLines($charFound, $lineEnded)
+  {
+    $lines = $this->_lines;
+    for ($y = 0, $yEnd =count($lines) ; $y<$yEnd; $y++) {
+      $chars = $lines[$y];
+      for ($x = 0,$xEnd=$this->_width; $x<$xEnd; $x++) {
+        $charFound($chars[$x], $x, $y);
+      }
+      if ($lineEnded) $lineEnded($y);
+    }
+  }
+
+
+  public function iterateColumns($charFound, $colEnded)
+  {
+    $lines = $this->_lines;
+    for ($x = 0,$xEnd=$this->_width; $x<$xEnd; $x++) {
+      for ($y = 0, $yEnd =count($lines) ; $y<$yEnd; $y++) {
+        $charFound($lines[$y][$x], $x, $y);
+      }
+      if ($colEnded) $colEnded($x);
+    }
+  }
+}
+
+
+class RowSpan
+{
+  public $draw;
+  public $span;
+
+  public function __construct($draw, $span=0) {
+    $this->draw = $draw;
+    $this->span = $span;
+  }
+
+  public function __toString()
+  {
+    return sprintf("Rs(%x:% 2d)", $this->draw, $this->span);
+  }
+}
+
+
+class RowSpanList
+{
+  public $items = array();
+
+  public function __toString() {
+    return "(".$this->totalSpan().")".implode(", ",$this->items);
+  }
+
+  public function count() {
+    return count($this->items);
+  }
+
+  public function totalSpan() {
+    $v = 0;
+    foreach($this->items as $item) {
+      $v += $item->span;
+    }
+    return $v;
+  }
+
+  /*
+
+  -  (a:1, b:1, a:1) + (a:3)
+  ->   (a:1, b:1, a:1) + (a:1, b:0, a:2)
+
+  -  (a:1, b:1, a:1) + (c:3)
+  ->   (a:1, b:1, a:1, c:0) + (a:0, b:0, a:0, c:3)
+
+  */
+
+  public function balanceWithJoin(RowSpanList $rsl)
+  {
+    $nChanged = 0;
+    $arr1 = &$rsl->items;
+    $arr2 = &$this->items;
+    
+    $idx = 0;
+
+    $loop = 0;
+    for(;; ) {
+      // echo "arr1:", implode(", ",$arr1), "\n",  "arr2:", implode(", ",$arr2), "\n";
+      // echo " ^ ^ ^ ^ ^ ^ ^\n";
+      if ($loop++>1000) throw new RuntimeException("too many loop");
+
+      $a1count = count($arr1);
+      $a2count = count($arr2);
+      if (($a1count <= $idx) && ($a2count <= $idx)) {
+        break;
+      }
+
+      if (($a1count > $idx) && ($a2count > $idx)) {
+        if ($arr1[$idx]->draw == $arr2[$idx]->draw) {
+          $idx++;
+          continue;
+        }
+      }
+      
+      $insertPos = $idx;
+      $insertArr = array();
+      if ($a1count > $a2count) {
+        $span = new RowSpan($arr1[$idx]->draw,0);
+        $insertArr[0] = $span;
+        $destArr = &$arr2;
+      } else {
+        $span = new RowSpan($arr2[$idx]->draw,0);
+        $insertArr[0] = $span;
+        $destArr = &$arr1;
+      }
+
+      //  TODO: (a:1, b:0, c:0) can be reordered as (a:1, c:0, b:0).
+      // Perhaps (a:1, b:0) could be nice than (a:1, b:0, a:0).
+      // for ($back = $idx; $back>0; $back--) {
+      //   $prevSpan = $destArr[$back-1]->span;
+      //   if ($prevSpan > 0) { // cannot exchange
+      //     break;
+      //   }
+      //   if ($destArr[$back-1]->draw == $span->draw) {
+      //     $insertArr = array_merge($insertArr,  array_slice($destArr, $back));
+      //     $insertPos = $back;
+      //     break;
+      //   }
+      // }
+      array_splice($destArr, $insertPos, count($insertArr)-1, $insertArr);
+      $nChanged ++;
+    }
+    return $nChanged;
+  }
+}
+
+function rowSpansFromDraw($composited) {
+  $rowSpans = array();
+  $colEnded  = function($x) { } ;
+  $charFound = function($ch, $x,$y) use (&$rowSpans) {
+    if (!isset($rowSpans[$x])) {
+      $rowSpans[$x] = new RowSpanList();
+    }
+    $rMax = $rowSpans[$x]->count();
+    if ($rMax > 0) {
+      $last = $rowSpans[$x]->items[$rMax-1];
+      if ($last->draw == $ch) {
+        $last->span = $last->span+1;
+        return;
+      }
+    }
+    $span = new RowSpan($ch, 1);
+    $rowSpans[$x]->items[$rMax] = $span; 
+  };
+  $composited->iterateColumns($charFound, $colEnded);
+
+  // 
+  // $testBalance = function($k1, $k2) use ($rowSpans) {
+  //   echo "----------------------------------------\n";
+  //   echo "rowSpans[$k1]\t", $rowSpans[$k1], "\n";
+  //   echo "rowSpans[$k2]\t", $rowSpans[$k2], "\n";
+  // 
+  //   echo "----------------------------------------\n";
+  //   $nChanged = $rowSpans[$k1]->balanceWithJoin($rowSpans[$k2]);
+  //   echo "nChanged: $nChanged\n";
+  //   echo "rowSpans[$k1]\t", $rowSpans[$k1], "\n";
+  //   echo "rowSpans[$k2]\t", $rowSpans[$k2], "\n";
+  // };
+  // $testBalance( 3,  4);
+  // $testBalance(63, 64);
+  // $testBalance(67, 68);
+  // $testBalance(27, 28);
+  return $rowSpans;
+}
+
+function printRowSpans($rowSpans)
+{
+  array_walk($rowSpans, function($rsl, $k) {
+      printf("%03d\t", $k);
+      echo $rsl;
+      echo "\n";
+      });
+}
+
+function colorlizedLine($line, $pallete) {
+	$f = function($n) use ($pallete) {
+		list($r,$g,$b) = array_map("hexdec",str_split($pallete[$n],2));
+		return 16 + 36 * round($r*5/255) + 6 * round($g*5/255) + round($b*5/255);
+	};
+	$k = array(); $v = array();
+	$k[] = '/([0-9])/' ;  $v[] = "%\\1";
+	$k[] = '/((?:%1)+)/';  $v[] = "\x1b[38;5;".$f(1)."m\\1\x1b[0m";
+	$k[] = '/((?:%2)+)/';  $v[] = "\x1b[38;5;".$f(2)."m\\1\x1b[0m";
+	$k[] = '/((?:%3)+)/';  $v[] = "\x1b[38;5;".$f(3)."m\\1\x1b[0m";
+	$k[] = '/((?:%4)+)/';  $v[] = "\x1b[38;5;".$f(4)."m\\1\x1b[0m";
+	$k[] = '/((?:%5)+)/';  $v[] = "\x1b[38;5;".$f(5)."m\\1\x1b[0m";
+	$k[] = '/((?:%6)+)/';  $v[] = "\x1b[38;5;".$f(6)."m\\1\x1b[0m";
+	$k[] = '/0/'        ;  $v[] = " ";
+	$k[] = '/%\d/'      ;  $v[] = "%";
+	return preg_replace($k,$v,$line);
+}
+
