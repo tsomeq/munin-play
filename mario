@@ -57,10 +57,10 @@ $mario = new DrawObject($marioChars);
 $mario->scaleY(3);
 $mario->scaleX(2);
 $background  = new DrawObject( array_fill_keys(range(0,96/*height*/), array_fill_keys(range(0,160/*width*/), 5/*bg color*/)));
-$background->compose($mario, 4, 12); // place image to {left: 4, top: 2}
+$background->compose($mario, 4, 12); // place image to {left: 4, top: 12}
 
 if (isset($_SERVER["argv"][1]) && ($_SERVER["argv"][1] == "testimage"))
-{ // Testing imae
+{ // Testing image
 	$line = "";
 	$background->iterateLines(function($ch, $x ,$y) use (&$line) {
 		if ($x==0) $line = "";
@@ -101,6 +101,7 @@ while(1) {
   if (DEBUG>1) printRowSpans($rowSpans);
 }
 
+//  Output Munin plugin config
 if (isset($_SERVER["argv"][1]) && ($_SERVER["argv"][1] == "config"))
 {
   $upper_limit = pow(10,ceil(log10($rowSpans[0]->totalSpan())));
@@ -153,7 +154,7 @@ class DrawObject
 
   public function getWidth() 
   {
-    return $this-_width;
+    return $this->_width;
   }
 
 
